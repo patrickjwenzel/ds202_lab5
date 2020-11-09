@@ -13,27 +13,155 @@ library(ggplot2)
 library(stringr)
 library(dplyr)
 library(lubridate)
+library(tidyverse)
+library(readxl)
 library(ggrepel)
-acc <- read.csv("https://raw.githubusercontent.com/xdaiISU/ds202materials/master/hwlabs/fars2017/accident.csv", stringsAsFactors = FALSE)
+acc = read.csv("https://raw.githubusercontent.com/xdaiISU/ds202materials/master/hwlabs/fars2017/accident.csv", stringsAsFactors = FALSE)
+person = read.csv("https://raw.githubusercontent.com/xdaiISU/ds202materials/master/hwlabs/fars2017/person.csv", stringsAsFactors = FALSE)
 ```
-
 
 ### 1. Are there some days of the week where more accidents happen than the others (see FARS manual, use variable DAY_WEEK)?
 
 ```{r}
-head(acc)
+acc$DAY_WEEK <- as.factor(acc$DAY_WEEK)
+levels(acc$DAY_WEEK) =  c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+
+dayGroup <- acc %>%
+  group_by(DAY_WEEK) %>%
+  summarise(totalAccident = n()) %>%
+  arrange(desc(totalAccident))
+
+ggplot(dayGroup, aes(x = DAY_WEEK, weight = totalAccident)) + geom_bar() + ggtitle('Number of Accidents in 2017 per Day') + xlab('Day of Week') + ylab('Number of Accidents')
 ```
+
+    Looking at the graph, it seems like weekend days (Friday, Saturday, Sunday) have a higher number of accidents than other days.
 
 ### 2. Create a data frame containing the persons who are fatally hurt in the accidents (look up variable INJ_SEV)
 
+```{r}
+fatal <- person %>%
+  filter(INJ_SEV == 4)
+
+head(fatal)
+```
+
 ### 3. Create a data frame containing the most dangerous vehicle make in each state. The number of persons fatally hit in the vehicle make is used to assess the (non-)safety of a make. Make sure to handle the missing values appropriately. (look up variable MAKE)
+
+```{r}
+danger <- person %>%
+  filter(INJ_SEV == 4, is.na(MAKE) == FALSE) %>%
+  group_by(STATE, MAKE) %>%
+  summarise(totalFatAcc = n()) %>%
+  group_by(STATE) %>%
+  filter(totalFatAcc == max(totalFatAcc))
+
+head(danger)
+```
 
 ### 4. Create a map, and label each state with the most dangerous vehicle. Discuss the definition of the most dangerous vehicle, and what you find from the map. (Hint: Read the description for the STATE and COUNTY columns in the FARS manual. The state & county codes are Geographic Locator Codes (GLCs) from the General Services Administration’s (GSA) publication. Use readxl::read_xlsx to read in the GLCs.)
 
+```{r, warning = FALSE}
+glcState = read_xlsx('FRPP_GLC_-_United_StatesSep292020.xlsx')
+states <- map_data('state')
+glcState$`State Code` <- as.numeric(glcState$`State Code`)
+danger$MAKE <- as.factor(danger$MAKE)
+
+danger <- danger %>%
+  filter(!((STATE == 8 & MAKE == 12) | (STATE == 34 & MAKE == 12) | (STATE == 50 & MAKE == 20)))
+
+danger2 <- danger %>%
+  left_join(glcState %>% select(c('State Name', 'State Code')), by = c('STATE' = 'State Code')) %>%
+  unique() %>%
+  mutate(`State Name` = tolower(`State Name`)) %>%
+  left_join(states %>% select(long, lat, region), by = c('State Name' = 'region'))
+
+danger3 <- danger2 %>% 
+  group_by(STATE, MAKE) %>% 
+  summarise(long = mean(long, na.rm = TRUE), lat = mean(lat, na.rm = TRUE)) %>%
+  filter(!STATE %in% c(2, 15))
+
+levels(danger3$MAKE) <-  c("F", "C", "T", "H")
+
+ggplot(states, aes(x = long, y = lat)) + geom_polygon(aes(group = group)) + geom_path(aes(group = group), color = 'grey') + geom_text(data = danger3, aes(x = long, y = lat, label = MAKE, color = MAKE)) + coord_map() + ggtitle('Most Dangerous Vehicle Company by US State') + xlab(' ') + ylab(' ') + labs(color = 'Make') + scale_color_manual(values = c("#2a71db", "#E7B800", "#e30505", "#0595e3"), labels = c("F = Ford", "C = Chevrolet", "T = Toyota", "H = Honda"))
+```
+
+    What I counted as the most dangerous vehicle was by the company that manfucatured the car. I think grouping it by company gives a better and easier to read summary of which cars are the most dangerous. That being said, it seems like Honda is probably the safest car brand as it does not pop up as much as other brands. Chevy definitely seems to be the most dangerous, being the most dangerous in the midwest and a lot of the south and east coast.
+
 ### 5. Join the accident and person table (work out which variable(s) to use)
+
+```{r}
+accPersJoin= acc %>%
+  select(c(STATE, DAY_WEEK, HOUR)) %>%
+  inner_join(person %>% select(c(STATE, SEX)), by = 'STATE')
+head(accPersJoin)
+```
 
 ### 6. Tally the number of accidents by day of the week (DAY_WEEK), hour of the day (HOUR) and gender (SEX). Visualize the results.
 
+```{r}
+dhsGroup <- accPersJoin %>%
+  group_by(DAY_WEEK, HOUR, SEX) %>%
+  summarise(totalAccidents = n()) %>%
+  arrange(desc(totalAccidents))
+
+dhsGroup <- dhsGroup %>%
+  filter(SEX %in% c(1, 2),
+         HOUR != 99)
+
+dhsGroup$SEX <- as.factor(dhsGroup$SEX)
+levels(dhsGroup$SEX) <-  c("Male", "Female")
+
+dhsGroup %>%
+  ggplot(aes(x = HOUR, weight = totalAccidents, fill = SEX)) + geom_histogram() + facet_grid(~DAY_WEEK) +
+  ggtitle('Number of Accidents by Hour') + xlab('Time Crash Occurred') + ylab('Number of Accidents') +
+  labs(fill = 'Gender')
+```
+
 ### 7. Now plot a choropleth map of the number of deaths on a county level.
 
+```{r}
+counties <- map_data('county')
+deaths <- acc %>%
+  group_by(COUNTY) %>%
+  summarise(numDeaths = sum(FATALS))
+
+glcState$`County Code` <- as.numeric(glcState$`County Code`)
+
+deaths2 <- deaths %>%
+  left_join(glcState %>% select(c('County Name', 'County Code')), by = c('COUNTY' = 'County Code')) %>%
+  mutate(`County Name` = tolower(`County Name`)) %>%
+  unique() %>%
+  left_join(counties, by = c('County Name' = 'subregion'))
+
+ggplot(counties, aes(x = long, y = lat)) + geom_polygon(aes(group = group)) + geom_polygon(data = deaths2, aes(x = long, y = lat, group = group, fill = numDeaths)) + coord_map() + ggtitle('Number of Deaths by County') + xlab(' ') + ylab(' ') + labs(fill = 'Number of Deaths') + scale_fill_gradient(low = "skyblue", high = "midnightblue") 
+```
+
 ### 8. Is summer or winter more dangerous? Does this depend on states? Explore and explain.
+
+```{r}
+season <- acc %>%
+  unite('date', c('MONTH', 'DAY', 'YEAR'), sep = "/")
+
+season$date <- mdy(season$date)
+
+season <- season %>%
+  filter((date <= mdy('03/20/2017')) | ((date >= mdy('06/20/2017')) & (date <= mdy('09/22/2017'))) |
+(date >= mdy('12/21/2017'))) %>%
+  mutate(season = ifelse((date >= mdy('06/20/2017')) & (date <= mdy('09/22/2017')), 'Summer', 'Winter'))
+
+seasonState <- season %>%
+  group_by(STATE, season) %>%
+  summarise(total_acc = n())
+
+seasonState2 <- seasonState %>%
+  left_join(glcState %>% select(c('State Name', 'State Code')), by = c('STATE' = 'State Code')) %>%
+  unique() %>%
+  mutate(`State Name` = tolower(`State Name`)) %>%
+  left_join(states, by = c('State Name' = 'region'))
+
+ggplot(states, aes(x = long, y = lat)) + geom_polygon(aes(group = group)) + geom_polygon(data = seasonState2 %>% filter(season == 'Summer'), aes(x = long, y = lat, group = group, fill = total_acc)) + scale_fill_gradient(low = "#f7f8fa", high = "red") + geom_path(aes(group = group), color = 'white') + coord_map() + ggtitle('Number of Accidents by State in Summer') + xlab(' ') + ylab(' ') + labs(fill = 'Total Accidents')
+
+ggplot(states, aes(x = long, y = lat)) + geom_polygon(aes(group = group)) + geom_polygon(data = seasonState2 %>% filter(season == 'Winter'), aes(x = long, y = lat, group = group, fill = total_acc)) + scale_fill_gradient(low = "#30bfe3", high = "#0b3399") + geom_path(aes(group = group), color = 'white') + coord_map() + ggtitle('Number of Accidents by State in Winter') + xlab(' ') + ylab(' ') + labs(fill = 'Total Accidents')
+```
+
+    In 2017, Winter was from December 21st 2016 to March 20th, 2017 and Summar was from Jun 20th, 2017 to September 22nd, 2017. Since we did not have 2016 data, I had winter start on January 1st, 2017. I think this is one reason why the Midwest states don't have as many accidents and that California, Texas, and Florida are reporting higher numbers in the winter since they have cities with large populations and lots of traffic. I would definitely say summer is more dangerous. You can see that the max of total accidents is higher and that more states are colored towards the higher numbers based on the legend and its color scale. I think this is because more people are driving in the summer than in the winter.
